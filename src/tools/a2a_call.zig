@@ -109,6 +109,14 @@ pub const A2aCallTool = struct {
             return .{ .success = false, .output = "", .error_msg = msg };
         };
 
+        // Reject URLs with userinfo (http://user:pass@host) — potential SSRF vector.
+        const scheme_end = std.mem.indexOf(u8, remote.url, "://") orelse 0;
+        const after_scheme = remote.url[@min(scheme_end + 3, remote.url.len)..];
+        const host_part_end = std.mem.indexOf(u8, after_scheme, "/") orelse after_scheme.len;
+        if (std.mem.indexOf(u8, after_scheme[0..host_part_end], "@") != null) {
+            return ToolResult.fail("URLs with userinfo (@) are not allowed — potential SSRF vector");
+        }
+
         // Validate URL scheme: HTTPS required unless targeting a private network.
         if (std.mem.startsWith(u8, remote.url, "http://") and !isPrivateUrl(remote.url)) {
             return ToolResult.fail("HTTPS required for remote agents on public networks. Use https:// or configure a private/Tailscale address.");
@@ -504,6 +512,209 @@ test "isPrivateUrl identifies private addresses" {
     try std.testing.expect(!isPrivateUrl("http://100.128.0.1")); // Outside CGNAT range
 }
 
+// ── SSRF variant tests ──────────────────────────────────────────
+
+test "isPrivateUrl rejects decimal IP alias for localhost" {
+    // 2130706433 = 127.0.0.1 in decimal — some HTTP clients resolve this
+    try std.testing.expect(!isPrivateUrl("http://2130706433:3000"));
+}
+
+test "isPrivateUrl rejects IPv6 loopback" {
+    try std.testing.expect(!isPrivateUrl("http://[::1]:3000"));
+}
+
+test "isPrivateUrl rejects zero IP" {
+    try std.testing.expect(!isPrivateUrl("http://0.0.0.0:3000"));
+}
+
+test "isPrivateUrl boundary 172.15 is not private" {
+    try std.testing.expect(!isPrivateUrl("http://172.15.0.1:3000"));
+}
+
+test "isPrivateUrl boundary 172.32 is not private" {
+    try std.testing.expect(!isPrivateUrl("http://172.32.0.1:3000"));
+}
+
+test "isPrivateUrl Tailscale boundary 100.63 is not CGNAT" {
+    try std.testing.expect(!isPrivateUrl("http://100.63.0.1:3000"));
+}
+
+test "a2a_call rejects URL with userinfo" {
+    // http://admin:password@evil.com could bypass host checks
+    const allocator = std.testing.allocator;
+    var agents = [_]RemoteAgentConfig{
+        .{ .name = "evil", .url = "http://admin:pass@evil.com" },
+    };
+    var t = A2aCallTool{ .remote_agents = &agents };
+    const parsed = try root.parseTestArgs(
+        \\{"agent":"evil","message":"hello"}
+    );
+    defer parsed.deinit();
+    const result = try t.execute(allocator, parsed.value.object);
+    try std.testing.expect(!result.success);
+}
+
+// ── Response parsing edge cases ─────────────────────────────────
+
+test "parseA2aResponse handles empty body" {
+    const allocator = std.testing.allocator;
+    const result = try parseA2aResponse(allocator, "");
+    try std.testing.expect(!result.success);
+}
+
+test "parseA2aResponse handles non-JSON body" {
+    const allocator = std.testing.allocator;
+    const result = try parseA2aResponse(allocator, "<html>502 Bad Gateway</html>");
+    try std.testing.expect(!result.success);
+}
+
+test "parseA2aResponse handles JSON array instead of object" {
+    const allocator = std.testing.allocator;
+    const result = try parseA2aResponse(allocator, "[1,2,3]");
+    try std.testing.expect(!result.success);
+}
+
+test "parseA2aResponse handles empty result object" {
+    const allocator = std.testing.allocator;
+    const result = try parseA2aResponse(allocator,
+        \\{"jsonrpc":"2.0","id":"1","result":{}}
+    );
+    try std.testing.expect(!result.success);
+}
+
+test "parseA2aResponse handles completed with empty artifacts" {
+    const allocator = std.testing.allocator;
+    const result = try parseA2aResponse(allocator,
+        \\{"jsonrpc":"2.0","id":"1","result":{"status":{"state":"completed"},"artifacts":[]}}
+    );
+    defer allocator.free(result.output);
+    try std.testing.expect(result.success);
+    try std.testing.expectEqualStrings("(completed with no response text)", result.output);
+}
+
+test "parseA2aResponse handles working state" {
+    const allocator = std.testing.allocator;
+    const result = try parseA2aResponse(allocator,
+        \\{"jsonrpc":"2.0","id":"1","result":{"id":"t1","status":{"state":"working"}}}
+    );
+    defer allocator.free(result.output);
+    try std.testing.expect(result.success);
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "Task state: working"));
+}
+
+test "parseA2aResponse handles rejected state" {
+    const allocator = std.testing.allocator;
+    const result = try parseA2aResponse(allocator,
+        \\{"jsonrpc":"2.0","id":"1","result":{"id":"t1","status":{"state":"rejected","message":{"parts":[{"kind":"text","text":"not authorized"}]}}}}
+    );
+    defer if (result.error_msg) |msg| allocator.free(msg);
+    try std.testing.expect(!result.success);
+}
+
+test "parseA2aResponse handles error without message field" {
+    const allocator = std.testing.allocator;
+    const result = try parseA2aResponse(allocator,
+        \\{"jsonrpc":"2.0","id":"1","error":{"code":-32600}}
+    );
+    try std.testing.expect(!result.success);
+}
+
+// ── JSON escape edge cases ──────────────────────────────────────
+
+test "jsonEscape handles empty string" {
+    const allocator = std.testing.allocator;
+    const escaped = try jsonEscape(allocator, "");
+    defer allocator.free(escaped);
+    try std.testing.expectEqualStrings("", escaped);
+}
+
+test "jsonEscape handles control characters" {
+    const allocator = std.testing.allocator;
+    const escaped = try jsonEscape(allocator, "\x00\x01\x1f");
+    defer allocator.free(escaped);
+    // Should produce unicode escapes for each control char
+    try std.testing.expect(escaped.len > 3);
+    try std.testing.expect(std.mem.startsWith(u8, escaped, "\\u"));
+}
+
+test "jsonEscape preserves normal text" {
+    const allocator = std.testing.allocator;
+    const escaped = try jsonEscape(allocator, "hello world 123");
+    defer allocator.free(escaped);
+    try std.testing.expectEqualStrings("hello world 123", escaped);
+}
+
+// ── Configuration edge cases ────────────────────────────────────
+
+test "a2a_call with no remote agents configured" {
+    const allocator = std.testing.allocator;
+    var t = A2aCallTool{};
+    const parsed = try root.parseTestArgs(
+        \\{"agent":"anything","message":"hello"}
+    );
+    defer parsed.deinit();
+    const result = try t.execute(allocator, parsed.value.object);
+    defer if (result.error_msg) |msg| allocator.free(msg);
+    try std.testing.expect(!result.success);
+}
+
+test "a2a_call agent lookup is case sensitive" {
+    const allocator = std.testing.allocator;
+    var agents = [_]RemoteAgentConfig{
+        .{ .name = "Ironclaw", .url = "https://example.com" },
+    };
+    var t = A2aCallTool{ .remote_agents = &agents };
+    const parsed = try root.parseTestArgs(
+        \\{"agent":"ironclaw","message":"hello"}
+    );
+    defer parsed.deinit();
+    const result = try t.execute(allocator, parsed.value.object);
+    defer if (result.error_msg) |msg| allocator.free(msg);
+    try std.testing.expect(!result.success);
+}
+
+test "a2a_call HTTPS accepted for public URLs" {
+    const allocator = std.testing.allocator;
+    var agents = [_]RemoteAgentConfig{
+        .{ .name = "secure", .url = "https://example.com" },
+    };
+    var t = A2aCallTool{ .remote_agents = &agents };
+
+    test_send_override = testSendCompleted;
+    defer {
+        test_send_override = null;
+    }
+
+    const parsed = try root.parseTestArgs(
+        \\{"agent":"secure","message":"hello"}
+    );
+    defer parsed.deinit();
+    const result = try t.execute(allocator, parsed.value.object);
+    defer allocator.free(result.output);
+    try std.testing.expect(result.success);
+}
+
+test "a2a_call HTTP error status returns failure" {
+    const allocator = std.testing.allocator;
+    var agents = [_]RemoteAgentConfig{
+        .{ .name = "broken", .url = "http://10.0.0.1:3000" },
+    };
+    var t = A2aCallTool{ .remote_agents = &agents };
+
+    test_send_override = testSend500;
+    defer {
+        test_send_override = null;
+    }
+
+    const parsed = try root.parseTestArgs(
+        \\{"agent":"broken","message":"hello"}
+    );
+    defer parsed.deinit();
+    const result = try t.execute(allocator, parsed.value.object);
+    defer if (result.error_msg) |msg| allocator.free(msg);
+    try std.testing.expect(!result.success);
+}
+
 /// Test helper: returns a completed A2A response.
 fn testSendCompleted(
     allocator: std.mem.Allocator,
@@ -518,5 +729,19 @@ fn testSendCompleted(
     return .{
         .status_code = 200,
         .body = try allocator.dupe(u8, resp_body),
+    };
+}
+
+/// Test helper: returns a 500 error.
+fn testSend500(
+    allocator: std.mem.Allocator,
+    _: []const u8,
+    _: []const u8,
+    _: []const []const u8,
+    _: ?[]const u8,
+) anyerror!http_util.HttpResponse {
+    return .{
+        .status_code = 500,
+        .body = try allocator.dupe(u8, "Internal Server Error"),
     };
 }
