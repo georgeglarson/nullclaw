@@ -217,8 +217,7 @@ fn parseA2aResponse(allocator: std.mem.Allocator, body: []const u8) !ToolResult 
     };
     defer parsed.deinit();
 
-    const root_obj = if (parsed.value == .object) parsed.value.object else
-        return ToolResult.fail("A2A response: expected JSON object");
+    const root_obj = if (parsed.value == .object) parsed.value.object else return ToolResult.fail("A2A response: expected JSON object");
 
     // Check for JSON-RPC error.
     if (root_obj.get("error")) |err_val| {
