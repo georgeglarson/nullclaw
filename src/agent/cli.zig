@@ -438,6 +438,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         .subagent_manager = &subagent_manager,
         .bootstrap_provider = bootstrap_provider,
         .backend_name = cfg.memory.backend,
+        .a2a_remote_agents = cfg.a2a.remote_agents,
     });
     defer tools_mod.deinitTools(allocator, tools);
 

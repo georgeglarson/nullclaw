@@ -293,6 +293,39 @@ fn normalizePeerId(allocator: std.mem.Allocator, raw_id: []const u8) ![]u8 {
     return allocator.dupe(u8, raw_id);
 }
 
+fn parseRemoteAgentsArray(
+    allocator: std.mem.Allocator,
+    arr: std.json.Array,
+) ![]const types.RemoteAgentConfig {
+    var list: std.ArrayListUnmanaged(types.RemoteAgentConfig) = .empty;
+    try list.ensureTotalCapacity(allocator, @intCast(arr.items.len));
+
+    for (arr.items) |item| {
+        if (item != .object) continue;
+
+        const name_val = item.object.get("name") orelse continue;
+        if (name_val != .string) continue;
+
+        const url_val = item.object.get("url") orelse continue;
+        if (url_val != .string) continue;
+
+        var agent = types.RemoteAgentConfig{
+            .name = try allocator.dupe(u8, name_val.string),
+            .url = try allocator.dupe(u8, url_val.string),
+        };
+
+        if (item.object.get("bearer_token")) |v| {
+            if (v == .string) agent.bearer_token = try allocator.dupe(u8, v.string);
+        }
+        if (item.object.get("timeout_secs")) |v| {
+            if (v == .integer and v.integer > 0) agent.timeout_secs = @intCast(v.integer);
+        }
+
+        try list.append(allocator, agent);
+    }
+    return try list.toOwnedSlice(allocator);
+}
+
 fn parseAgentBindingsArray(
     allocator: std.mem.Allocator,
     arr: std.json.Array,
@@ -1943,6 +1976,11 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
             }
             if (a2a.object.get("version")) |v| {
                 if (v == .string) self.a2a.version = try self.allocator.dupe(u8, v.string);
+            }
+            if (a2a.object.get("remote_agents")) |v| {
+                if (v == .array) {
+                    self.a2a.remote_agents = try parseRemoteAgentsArray(self.allocator, v.array);
+                }
             }
         }
     }

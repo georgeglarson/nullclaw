@@ -1123,6 +1123,7 @@ pub const SessionManager = struct {
             .subagent_manager = self.subagent_manager,
             .bootstrap_provider = bootstrap_provider,
             .backend_name = self.config.memory.backend,
+            .a2a_remote_agents = self.config.a2a.remote_agents,
         }) catch &.{};
         errdefer if (runtime_tools.len > 0) tools_mod.deinitTools(self.allocator, runtime_tools);
 

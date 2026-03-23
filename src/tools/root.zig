@@ -107,6 +107,7 @@ pub const web_search = @import("web_search.zig");
 pub const web_fetch = @import("web_fetch.zig");
 pub const file_append = @import("file_append.zig");
 pub const spawn = @import("spawn.zig");
+pub const a2a_call = @import("a2a_call.zig");
 pub const i2c = @import("i2c.zig");
 pub const spi = @import("spi.zig");
 pub const path_security = @import("path_security.zig");
@@ -312,6 +313,7 @@ pub fn allTools(
         policy: ?*const @import("../security/policy.zig").SecurityPolicy = null,
         bootstrap_provider: ?bootstrap_mod.BootstrapProvider = null,
         backend_name: []const u8 = "hybrid",
+        a2a_remote_agents: []const @import("../config_types.zig").RemoteAgentConfig = &.{},
     },
 ) ![]Tool {
     var list: std.ArrayList(Tool) = .{};
@@ -429,6 +431,13 @@ pub fn allTools(
     const scht = try allocator.create(schedule.ScheduleTool);
     scht.* = .{};
     try list.append(allocator, scht.tool());
+
+    // A2A client tool (remote agent calls, gated on http + configured agents)
+    if (opts.http_enabled and opts.a2a_remote_agents.len > 0) {
+        const a2a = try allocator.create(a2a_call.A2aCallTool);
+        a2a.* = .{ .remote_agents = opts.a2a_remote_agents };
+        try list.append(allocator, a2a.tool());
+    }
 
     // Spawn tool (async subagent)
     const sp = try allocator.create(spawn.SpawnTool);

@@ -77,6 +77,7 @@ pub const MemoryConfig = config_types.MemoryConfig;
 pub const TunnelConfig = config_types.TunnelConfig;
 pub const GatewayConfig = config_types.GatewayConfig;
 pub const A2aConfig = config_types.A2aConfig;
+pub const RemoteAgentConfig = config_types.RemoteAgentConfig;
 pub const ComposioConfig = config_types.ComposioConfig;
 pub const SecretsConfig = config_types.SecretsConfig;
 pub const BrowserComputerUseConfig = config_types.BrowserComputerUseConfig;

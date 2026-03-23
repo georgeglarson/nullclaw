@@ -1177,6 +1177,7 @@ pub const ChannelRuntime = struct {
             .subagent_manager = subagent_manager,
             .bootstrap_provider = bootstrap_provider,
             .backend_name = config.memory.backend,
+            .a2a_remote_agents = config.a2a.remote_agents,
         }) catch &.{};
         errdefer if (tools.len > 0) tools_mod.deinitTools(allocator, tools);
 

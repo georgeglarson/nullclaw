@@ -1309,12 +1309,20 @@ pub const GatewayConfig = struct {
 
 // ── A2A (Agent-to-Agent) protocol config ────────────────────────
 
+pub const RemoteAgentConfig = struct {
+    name: []const u8,
+    url: []const u8,
+    bearer_token: ?[]const u8 = null,
+    timeout_secs: u64 = 120,
+};
+
 pub const A2aConfig = struct {
     enabled: bool = false,
     name: []const u8 = "NullClaw",
     description: []const u8 = "AI assistant",
     url: []const u8 = "",
     version: []const u8 = "1.0.0",
+    remote_agents: []const RemoteAgentConfig = &.{},
 };
 
 // ── Composio config ─────────────────────────────────────────────
