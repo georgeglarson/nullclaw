@@ -393,7 +393,11 @@ pub fn allTools(
     try list.append(allocator, feh.tool());
 
     const gt = try allocator.create(git.GitTool);
-    gt.* = .{ .workspace_dir = workspace_dir };
+    gt.* = .{
+        .workspace_dir = workspace_dir,
+        .allowed_paths = opts.allowed_paths,
+        .allowed_clone_domains = opts.http_allowed_domains,
+    };
     try list.append(allocator, gt.tool());
 
     // Tools without workspace_dir
@@ -670,7 +674,11 @@ pub fn subagentTools(
     try list.append(allocator, feh.tool());
 
     const gt = try allocator.create(git.GitTool);
-    gt.* = .{ .workspace_dir = workspace_dir };
+    gt.* = .{
+        .workspace_dir = workspace_dir,
+        .allowed_paths = opts.allowed_paths,
+        .allowed_clone_domains = opts.http_allowed_domains,
+    };
     try list.append(allocator, gt.tool());
 
     if (opts.http_enabled) {

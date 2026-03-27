@@ -10,11 +10,12 @@ const UNAVAILABLE_WORKSPACE_SENTINEL = "/__nullclaw_workspace_unavailable__";
 pub const GitTool = struct {
     workspace_dir: []const u8,
     allowed_paths: []const []const u8 = &.{},
+    allowed_clone_domains: []const []const u8 = &.{},
 
     pub const tool_name = "git_operations";
-    pub const tool_description = "Perform structured Git operations (status, diff, log, branch, commit, add, checkout, stash).";
+    pub const tool_description = "Perform structured Git operations (status, diff, log, branch, commit, add, checkout, stash, clone, fetch, pull).";
     pub const tool_params =
-        \\{"type":"object","properties":{"operation":{"type":"string","enum":["status","diff","log","branch","commit","add","checkout","stash"],"description":"Git operation to perform"},"message":{"type":"string","description":"Commit message (for commit)"},"paths":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File paths (for add). Prefer array for multiple files."},"branch":{"type":"string","description":"Branch name (for checkout)"},"files":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"Files to diff. Prefer array for multiple files."},"cached":{"type":"boolean","description":"Show staged changes (diff)"},"limit":{"type":"integer","description":"Log entry count (default: 10)"},"cwd":{"type":"string","description":"Repository directory (absolute path within allowed paths; defaults to workspace)"}},"required":["operation"]}
+        \\{"type":"object","properties":{"operation":{"type":"string","enum":["status","diff","log","branch","commit","add","checkout","stash","clone","fetch","pull"],"description":"Git operation to perform"},"url":{"type":"string","description":"Repository URL (for clone). Must be HTTPS and from an allowed domain."},"target":{"type":"string","description":"Target directory name within workspace repos/ (for clone). Defaults to repo name from URL."},"depth":{"type":"integer","description":"Clone depth (for clone, default: 1 = shallow)"},"message":{"type":"string","description":"Commit message (for commit)"},"paths":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File paths (for add). Prefer array for multiple files."},"branch":{"type":"string","description":"Branch name (for checkout)"},"files":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"Files to diff. Prefer array for multiple files."},"cached":{"type":"boolean","description":"Show staged changes (diff)"},"limit":{"type":"integer","description":"Log entry count (default: 10)"},"cwd":{"type":"string","description":"Repository directory (absolute path within allowed paths; defaults to workspace)"}},"required":["operation"]}
     ;
 
     const vtable = root.ToolVTable(@This());
@@ -143,7 +144,7 @@ pub const GitTool = struct {
             break :blk cwd;
         } else self.workspace_dir;
 
-        const GitOp = enum { status, diff, log, branch, commit, add, checkout, stash };
+        const GitOp = enum { status, diff, log, branch, commit, add, checkout, stash, clone, fetch, pull };
         const op_map = std.StaticStringMap(GitOp).initComptime(.{
             .{ "status", .status },
             .{ "diff", .diff },
@@ -153,6 +154,9 @@ pub const GitTool = struct {
             .{ "add", .add },
             .{ "checkout", .checkout },
             .{ "stash", .stash },
+            .{ "clone", .clone },
+            .{ "fetch", .fetch },
+            .{ "pull", .pull },
         });
 
         if (op_map.get(operation)) |op| return switch (op) {
@@ -164,6 +168,9 @@ pub const GitTool = struct {
             .add => self.gitAdd(allocator, effective_cwd, args),
             .checkout => self.gitCheckout(allocator, effective_cwd, args),
             .stash => self.gitStash(allocator, effective_cwd, args),
+            .clone => self.gitClone(allocator, args),
+            .fetch => self.runGitOp(allocator, effective_cwd, &.{ "fetch", "--depth", "1" }),
+            .pull => self.runGitOp(allocator, effective_cwd, &.{ "pull", "--ff-only" }),
         };
 
         const msg = try std.fmt.allocPrint(allocator, "Unknown operation: {s}", .{operation});
@@ -402,6 +409,107 @@ pub const GitTool = struct {
 
         const msg = try std.fmt.allocPrint(allocator, "Unknown stash action: {s}", .{action});
         return ToolResult{ .success = false, .output = "", .error_msg = msg };
+    }
+
+    /// Clone a remote repository into the workspace repos/ directory.
+    fn gitClone(self: *GitTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const url = root.getString(args, "url") orelse
+            return ToolResult.fail("Missing 'url' parameter for clone");
+
+        // Only allow HTTPS URLs
+        if (!std.mem.startsWith(u8, url, "https://"))
+            return ToolResult.fail("Only HTTPS clone URLs are allowed");
+
+        // Validate URL contains no dangerous characters
+        if (!sanitizeGitArgs(url))
+            return ToolResult.fail("Unsafe characters in clone URL");
+
+        // Extract hostname from URL for domain validation
+        const after_scheme = url["https://".len..];
+        const host_end = std.mem.indexOfAny(u8, after_scheme, "/:");
+        const hostname = if (host_end) |end| after_scheme[0..end] else after_scheme;
+
+        if (hostname.len == 0)
+            return ToolResult.fail("Invalid clone URL: empty hostname");
+
+        // Validate against allowed domains
+        if (self.allowed_clone_domains.len > 0) {
+            var domain_allowed = false;
+            for (self.allowed_clone_domains) |domain| {
+                if (std.ascii.eqlIgnoreCase(hostname, domain)) {
+                    domain_allowed = true;
+                    break;
+                }
+            }
+            if (!domain_allowed) {
+                const err = try std.fmt.allocPrint(allocator, "Clone domain '{s}' is not in allowed domains", .{hostname});
+                return ToolResult{ .success = false, .output = "", .error_msg = err };
+            }
+        }
+
+        // Determine target directory name
+        const target_name = if (root.getString(args, "target")) |t| t else blk: {
+            // Extract repo name from URL: last path segment, strip .git suffix
+            const path_start = std.mem.indexOfScalar(u8, after_scheme, '/') orelse
+                return ToolResult.fail("Invalid clone URL: no path");
+            const path = after_scheme[path_start + 1 ..];
+            const last_slash = std.mem.lastIndexOfScalar(u8, path, '/');
+            const basename = if (last_slash) |s| path[s + 1 ..] else path;
+            if (basename.len == 0)
+                return ToolResult.fail("Invalid clone URL: cannot determine repo name");
+            // Strip .git suffix if present
+            break :blk if (std.mem.endsWith(u8, basename, ".git"))
+                basename[0 .. basename.len - 4]
+            else
+                basename;
+        };
+
+        if (target_name.len == 0)
+            return ToolResult.fail("Empty target directory name");
+
+        // Validate target name has no path traversal
+        if (std.mem.indexOf(u8, target_name, "..") != null or
+            std.mem.indexOfScalar(u8, target_name, '/') != null or
+            std.mem.indexOfScalar(u8, target_name, '\\') != null)
+        {
+            return ToolResult.fail("Target directory name must not contain path separators or '..'");
+        }
+
+        // Build target path within workspace repos/
+        const repos_dir = try std.fs.path.join(allocator, &.{ self.workspace_dir, "repos" });
+        defer allocator.free(repos_dir);
+
+        // Ensure repos/ directory exists
+        std.fs.cwd().makePath(repos_dir) catch |err| {
+            const err_msg = try std.fmt.allocPrint(allocator, "Failed to create repos directory: {}", .{err});
+            return ToolResult{ .success = false, .output = "", .error_msg = err_msg };
+        };
+
+        const target_path = try std.fs.path.join(allocator, &.{ repos_dir, target_name });
+        defer allocator.free(target_path);
+
+        // Check if target already exists
+        if (std.fs.cwd().access(target_path, .{})) |_| {
+            const err_msg = try std.fmt.allocPrint(allocator, "Target directory already exists: repos/{s}. Use shell 'rm -rf' first or choose a different target name.", .{target_name});
+            return ToolResult{ .success = false, .output = "", .error_msg = err_msg };
+        } else |_| {}
+
+        // Build clone command
+        const depth_raw = root.getInt(args, "depth") orelse 1;
+        const depth: usize = @intCast(@min(@max(depth_raw, 1), 1000));
+        var depth_buf: [16]u8 = undefined;
+        const depth_str = try std.fmt.bufPrint(&depth_buf, "{d}", .{depth});
+
+        const result = try self.runGit(allocator, repos_dir, &.{ "clone", "--depth", depth_str, url, target_name });
+        defer allocator.free(result.stderr);
+        if (!result.success) {
+            defer allocator.free(result.stdout);
+            const msg = try allocator.dupe(u8, if (result.stderr.len > 0) result.stderr else "Git clone failed");
+            return ToolResult{ .success = false, .output = "", .error_msg = msg };
+        }
+        defer allocator.free(result.stdout);
+        const out = try std.fmt.allocPrint(allocator, "Cloned {s} into repos/{s} (depth={s})", .{ url, target_name, depth_str });
+        return ToolResult{ .success = true, .output = out };
     }
 };
 
@@ -707,6 +815,80 @@ test "git execute blocks unsafe args in files string" {
     var gt = GitTool{ .workspace_dir = "/tmp" };
     const t = gt.tool();
     const parsed = try root.parseTestArgs("{\"operation\": \"diff\", \"files\": \"src/main.zig; rm -rf /\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
+    try std.testing.expect(!result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "Unsafe") != null);
+}
+
+// ── Clone operation tests ───────────────────────────────────────────
+
+test "git clone missing url" {
+    var gt = GitTool{ .workspace_dir = "/tmp" };
+    const t = gt.tool();
+    const parsed = try root.parseTestArgs("{\"operation\": \"clone\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
+    try std.testing.expect(!result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "Missing 'url'") != null);
+}
+
+test "git clone rejects non-https url" {
+    var gt = GitTool{ .workspace_dir = "/tmp" };
+    const t = gt.tool();
+    const parsed = try root.parseTestArgs("{\"operation\": \"clone\", \"url\": \"git@github.com:user/repo.git\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
+    try std.testing.expect(!result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "HTTPS") != null);
+}
+
+test "git clone rejects http url" {
+    var gt = GitTool{ .workspace_dir = "/tmp" };
+    const t = gt.tool();
+    const parsed = try root.parseTestArgs("{\"operation\": \"clone\", \"url\": \"http://github.com/user/repo.git\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
+    try std.testing.expect(!result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "HTTPS") != null);
+}
+
+test "git clone rejects disallowed domain" {
+    const allowed = [_][]const u8{"github.com"};
+    var gt = GitTool{ .workspace_dir = "/tmp", .allowed_clone_domains = &allowed };
+    const t = gt.tool();
+    const parsed = try root.parseTestArgs("{\"operation\": \"clone\", \"url\": \"https://evil.com/user/repo.git\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
+    defer if (result.error_msg) |e| std.testing.allocator.free(e);
+    try std.testing.expect(!result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "not in allowed domains") != null);
+}
+
+test "git clone rejects path traversal in target" {
+    var gt = GitTool{ .workspace_dir = "/tmp" };
+    const t = gt.tool();
+    const parsed = try root.parseTestArgs("{\"operation\": \"clone\", \"url\": \"https://github.com/user/repo.git\", \"target\": \"../etc\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
+    try std.testing.expect(!result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "path separators") != null);
+}
+
+test "git clone rejects slash in target" {
+    var gt = GitTool{ .workspace_dir = "/tmp" };
+    const t = gt.tool();
+    const parsed = try root.parseTestArgs("{\"operation\": \"clone\", \"url\": \"https://github.com/user/repo.git\", \"target\": \"foo/bar\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
+    try std.testing.expect(!result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "path separators") != null);
+}
+
+test "git clone rejects unsafe chars in url" {
+    var gt = GitTool{ .workspace_dir = "/tmp" };
+    const t = gt.tool();
+    const parsed = try root.parseTestArgs("{\"operation\": \"clone\", \"url\": \"https://github.com/user/repo.git; rm -rf /\"}");
     defer parsed.deinit();
     const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
