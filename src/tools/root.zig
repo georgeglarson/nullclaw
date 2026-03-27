@@ -405,22 +405,29 @@ pub fn allTools(
     it.* = .{};
     try list.append(allocator, it.tool());
 
-    // Memory tools (work gracefully without a backend)
-    const mst = try allocator.create(memory_store.MemoryStoreTool);
-    mst.* = .{};
-    try list.append(allocator, mst.tool());
+    // Memory tools — only included when autonomy is full or yolo.
+    // Supervised/read-only agents on public channels should not allow
+    // untrusted users to manipulate durable memory.
+    if (opts.policy == null or
+        opts.policy.?.autonomy == .full or
+        opts.policy.?.autonomy == .yolo)
+    {
+        const mst = try allocator.create(memory_store.MemoryStoreTool);
+        mst.* = .{};
+        try list.append(allocator, mst.tool());
 
-    const mrt = try allocator.create(memory_recall.MemoryRecallTool);
-    mrt.* = .{};
-    try list.append(allocator, mrt.tool());
+        const mrt = try allocator.create(memory_recall.MemoryRecallTool);
+        mrt.* = .{};
+        try list.append(allocator, mrt.tool());
 
-    const mlt = try allocator.create(memory_list.MemoryListTool);
-    mlt.* = .{};
-    try list.append(allocator, mlt.tool());
+        const mlt = try allocator.create(memory_list.MemoryListTool);
+        mlt.* = .{};
+        try list.append(allocator, mlt.tool());
 
-    const mft = try allocator.create(memory_forget.MemoryForgetTool);
-    mft.* = .{};
-    try list.append(allocator, mft.tool());
+        const mft = try allocator.create(memory_forget.MemoryForgetTool);
+        mft.* = .{};
+        try list.append(allocator, mft.tool());
+    }
 
     // Delegate and schedule tools
     const dlt = try allocator.create(delegate.DelegateTool);
