@@ -326,7 +326,11 @@ pub const IrcChannel = struct {
         const chunks = try splitIrcMessage(self.allocator, message, max_payload);
         defer self.allocator.free(chunks);
 
-        for (chunks) |chunk| {
+        // Flood protection: cap output to 20 lines per message.
+        const max_chunks: usize = 20;
+        const limited = chunks[0..@min(chunks.len, max_chunks)];
+
+        for (limited) |chunk| {
             // Build: "PRIVMSG <target> :<chunk>\r\n"
             var line_buf: [MAX_LINE_LEN]u8 = undefined;
             var line_fbs = std.io.fixedBufferStream(&line_buf);
