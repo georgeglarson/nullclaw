@@ -499,6 +499,8 @@ pub const IrcConfig = struct {
     nick: []const u8,
     username: ?[]const u8 = null,
     channels: []const []const u8 = &.{},
+    /// Keys for keyed (+k) channels, matched positionally to the channels list.
+    channel_keys: []const []const u8 = &.{},
     allow_from: []const []const u8 = &.{},
     server_password: ?[]const u8 = null,
     nickserv_password: ?[]const u8 = null,

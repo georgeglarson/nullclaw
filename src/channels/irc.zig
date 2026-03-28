@@ -30,6 +30,7 @@ pub const IrcChannel = struct {
     nick: []const u8,
     username: []const u8,
     channels: []const []const u8,
+    channel_keys: []const []const u8 = &.{},
     allow_from: []const []const u8,
     server_password: ?[]const u8,
     nickserv_password: ?[]const u8,
@@ -112,6 +113,7 @@ pub const IrcChannel = struct {
             cfg.tls,
         );
         ch.account_id = cfg.account_id;
+        ch.channel_keys = cfg.channel_keys;
         return ch;
     }
 
@@ -448,11 +450,15 @@ pub const IrcChannel = struct {
         try user_fbs.writer().print("USER {s} 0 * :{s}", .{ self.username, self.nick });
         try self.sendRaw(user_fbs.getWritten());
 
-        // Join configured channels
-        for (self.channels) |ch| {
+        // Join configured channels (with optional keys for +k channels)
+        for (self.channels, 0..) |ch, i| {
             var join_buf: [MAX_LINE_LEN]u8 = undefined;
             var join_fbs = std.io.fixedBufferStream(&join_buf);
-            try join_fbs.writer().print("JOIN {s}", .{ch});
+            if (i < self.channel_keys.len and self.channel_keys[i].len > 0) {
+                try join_fbs.writer().print("JOIN {s} {s}", .{ ch, self.channel_keys[i] });
+            } else {
+                try join_fbs.writer().print("JOIN {s}", .{ch});
+            }
             try self.sendRaw(join_fbs.getWritten());
         }
 
