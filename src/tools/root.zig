@@ -348,33 +348,40 @@ pub fn allTools(
     };
     try list.append(allocator, ft.tool());
 
-    const wt = try allocator.create(file_write.FileWriteTool);
-    wt.* = .{
-        .workspace_dir = workspace_dir,
-        .allowed_paths = opts.allowed_paths,
-        .bootstrap_provider = opts.bootstrap_provider,
-        .backend_name = opts.backend_name,
-    };
-    try list.append(allocator, wt.tool());
+    // Write tools — only included when autonomy is full or yolo.
+    // Supervised agents on public channels should not allow file mutation.
+    if (opts.policy == null or
+        opts.policy.?.autonomy == .full or
+        opts.policy.?.autonomy == .yolo)
+    {
+        const wt = try allocator.create(file_write.FileWriteTool);
+        wt.* = .{
+            .workspace_dir = workspace_dir,
+            .allowed_paths = opts.allowed_paths,
+            .bootstrap_provider = opts.bootstrap_provider,
+            .backend_name = opts.backend_name,
+        };
+        try list.append(allocator, wt.tool());
 
-    const et2 = try allocator.create(file_edit.FileEditTool);
-    et2.* = .{
-        .workspace_dir = workspace_dir,
-        .allowed_paths = opts.allowed_paths,
-        .max_file_size = tc.max_file_size_bytes,
-        .bootstrap_provider = opts.bootstrap_provider,
-        .backend_name = opts.backend_name,
-    };
-    try list.append(allocator, et2.tool());
+        const et2 = try allocator.create(file_edit.FileEditTool);
+        et2.* = .{
+            .workspace_dir = workspace_dir,
+            .allowed_paths = opts.allowed_paths,
+            .max_file_size = tc.max_file_size_bytes,
+            .bootstrap_provider = opts.bootstrap_provider,
+            .backend_name = opts.backend_name,
+        };
+        try list.append(allocator, et2.tool());
 
-    const dt = try allocator.create(file_delete.FileDeleteTool);
-    dt.* = .{
-        .workspace_dir = workspace_dir,
-        .allowed_paths = opts.allowed_paths,
-        .bootstrap_provider = opts.bootstrap_provider,
-        .backend_name = opts.backend_name,
-    };
-    try list.append(allocator, dt.tool());
+        const dt = try allocator.create(file_delete.FileDeleteTool);
+        dt.* = .{
+            .workspace_dir = workspace_dir,
+            .allowed_paths = opts.allowed_paths,
+            .bootstrap_provider = opts.bootstrap_provider,
+            .backend_name = opts.backend_name,
+        };
+        try list.append(allocator, dt.tool());
+    }
 
     const frh = try allocator.create(file_read_hashed.FileReadHashedTool);
     frh.* = .{
@@ -384,21 +391,27 @@ pub fn allTools(
     };
     try list.append(allocator, frh.tool());
 
-    const feh = try allocator.create(file_edit_hashed.FileEditHashedTool);
-    feh.* = .{
-        .workspace_dir = workspace_dir,
-        .allowed_paths = opts.allowed_paths,
-        .max_file_size = tc.max_file_size_bytes,
-    };
-    try list.append(allocator, feh.tool());
+    // Edit-hashed, git — only for full/yolo autonomy
+    if (opts.policy == null or
+        opts.policy.?.autonomy == .full or
+        opts.policy.?.autonomy == .yolo)
+    {
+        const feh = try allocator.create(file_edit_hashed.FileEditHashedTool);
+        feh.* = .{
+            .workspace_dir = workspace_dir,
+            .allowed_paths = opts.allowed_paths,
+            .max_file_size = tc.max_file_size_bytes,
+        };
+        try list.append(allocator, feh.tool());
 
-    const gt = try allocator.create(git.GitTool);
-    gt.* = .{
-        .workspace_dir = workspace_dir,
-        .allowed_paths = opts.allowed_paths,
-        .allowed_clone_domains = opts.http_allowed_domains,
-    };
-    try list.append(allocator, gt.tool());
+        const gt = try allocator.create(git.GitTool);
+        gt.* = .{
+            .workspace_dir = workspace_dir,
+            .allowed_paths = opts.allowed_paths,
+            .allowed_clone_domains = opts.http_allowed_domains,
+        };
+        try list.append(allocator, gt.tool());
+    }
 
     // Tools without workspace_dir
     const it = try allocator.create(image.ImageInfoTool);
@@ -429,19 +442,25 @@ pub fn allTools(
         try list.append(allocator, mft.tool());
     }
 
-    // Delegate and schedule tools
-    const dlt = try allocator.create(delegate.DelegateTool);
-    dlt.* = .{
-        .agents = opts.agents orelse &.{},
-        .configured_providers = opts.configured_providers,
-        .fallback_api_key = opts.fallback_api_key,
-        .depth = opts.delegate_depth,
-    };
-    try list.append(allocator, dlt.tool());
+    // Delegate, schedule — only for full/yolo autonomy.
+    // Supervised agents should not spawn sub-agents or create cron jobs.
+    if (opts.policy == null or
+        opts.policy.?.autonomy == .full or
+        opts.policy.?.autonomy == .yolo)
+    {
+        const dlt = try allocator.create(delegate.DelegateTool);
+        dlt.* = .{
+            .agents = opts.agents orelse &.{},
+            .configured_providers = opts.configured_providers,
+            .fallback_api_key = opts.fallback_api_key,
+            .depth = opts.delegate_depth,
+        };
+        try list.append(allocator, dlt.tool());
 
-    const scht = try allocator.create(schedule.ScheduleTool);
-    scht.* = .{};
-    try list.append(allocator, scht.tool());
+        const scht = try allocator.create(schedule.ScheduleTool);
+        scht.* = .{};
+        try list.append(allocator, scht.tool());
+    }
 
     // A2A client tool (remote agent calls, gated on http + configured agents)
     if (opts.http_enabled and opts.a2a_remote_agents.len > 0) {
@@ -450,10 +469,15 @@ pub fn allTools(
         try list.append(allocator, a2a.tool());
     }
 
-    // Spawn tool (async subagent)
-    const sp = try allocator.create(spawn.SpawnTool);
-    sp.* = .{ .manager = opts.subagent_manager };
-    try list.append(allocator, sp.tool());
+    // Spawn tool — only for full/yolo autonomy
+    if (opts.policy == null or
+        opts.policy.?.autonomy == .full or
+        opts.policy.?.autonomy == .yolo)
+    {
+        const sp = try allocator.create(spawn.SpawnTool);
+        sp.* = .{ .manager = opts.subagent_manager };
+        try list.append(allocator, sp.tool());
+    }
 
     if (opts.http_enabled) {
         // Pushover notification tool (network egress, gated with HTTP tools).
